@@ -38,7 +38,33 @@ ACK_EMOJIS = {"white_check_mark", "heavy_check_mark", "ballot_box_with_check"}
 
 HASHTAGS = {"#sehari": 1, "#h-3": 3, "#h-5": 5, "#h-7": 7, "#h-14": 14}
 TAG_NAME = {v: k for k, v in HASHTAGS.items()}
-EMOJI = {1: ":bell:", 3: ":hourglass_flowing_sand:", 5: ":warning:", 7: ":warning:", 14: ":rotating_light:"}
+
+# ======================================================================
+#  ✏️  TEKS REMINDER — UBAH DI SINI SAJA
+#  Placeholder yang bisa dipakai (tulis persis dengan kurung kurawal):
+#    {mention}  -> tag user di REMINDER_USER_ID
+#    {tag}      -> hashtag, mis. #h-3
+#    {hari}     -> angka hari, mis. 3
+#  Format Slack: *tebal*  _miring_  ~coret~  :emoji:  <https://url|teks link>
+#  Baris baru: tulis \n
+# ======================================================================
+PESAN = {
+    1:  ":bell: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    3:  ":hourglass_flowing_sand: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    5:  ":warning: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    7:  ":warning: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    14: ":rotating_light: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+}
+
+# Teks kecil abu-abu di bawah pesan. Kosongkan ("") jika tidak perlu.
+#   {lanjut} -> diisi PESAN_LANJUT atau PESAN_TERAKHIR
+PESAN_BAWAH = "{lanjut} Beri reaksi :white_check_mark: jika sudah selesai."
+PESAN_LANJUT = "Reminder berikutnya: {tag_berikut} ({sisa} hari lagi)."
+PESAN_TERAKHIR = "Ini reminder terakhir."
+
+# Teks di notifikasi HP/desktop
+PESAN_NOTIF = "Reminder {tag} untuk chat ini"
+# ======================================================================
 SCAN_DAYS = max(HASHTAGS.values()) + 2  # cukup pindai 16 hari terakhir
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -100,16 +126,23 @@ def payload(msg: dict, event_type: str) -> dict | None:
 
 
 # ================================================================ reply
+def fill(template: str, **vals) -> str:
+    """Isi {placeholder} tanpa error walau teks mengandung kurung kurawal lain."""
+    for k, v in vals.items():
+        template = template.replace("{" + k + "}", str(v))
+    return template
+
+
 def reminder_blocks(owner: str, day: int, triggers: list[int]) -> tuple[str, list[dict]]:
+    vals = {"mention": f"<@{owner}>", "tag": TAG_NAME[day], "hari": day}
     nxt = next((t for t in triggers if t > day), None)
-    follow = (f"Reminder berikutnya: {TAG_NAME[nxt]} ({nxt - day} hari lagi)." if nxt
-              else "Ini reminder terakhir.")
-    return (f"Reminder {TAG_NAME[day]} KERJAIN JANGAN BESOK BESOK", [
-        {"type": "section", "text": {"type": "mrkdwn",
-            "text": f"{EMOJI[day]} <@{owner}> Reminder *{TAG_NAME[day]}* — sudah {day} hari sejak chat ini dikirim."}},
-        {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": f"{follow} Beri reaksi :white_check_mark: jika sudah selesai."}]},
-    ])
+    lanjut = (fill(PESAN_LANJUT, tag_berikut=TAG_NAME[nxt], sisa=nxt - day) if nxt
+              else PESAN_TERAKHIR)
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": fill(PESAN[day], **vals)}}]
+    bawah = fill(PESAN_BAWAH, lanjut=lanjut, **vals).strip()
+    if bawah:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": bawah}]})
+    return fill(PESAN_NOTIF, **vals), blocks
 
 
 # ================================================================ main
