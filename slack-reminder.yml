@@ -1,0 +1,44 @@
+name: Slack Reminder
+
+on:
+  schedule:
+    - cron: "0 2 * * *"        # 09:00 WIB setiap hari
+  push:
+    paths: ["reminders.yaml"]  # validasi otomatis saat reminders.yaml diubah
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Simulasi tanggal (YYYY-MM-DD), kosongkan = hari ini"
+        required: false
+      dry_run:
+        description: "Dry run (tidak kirim ke Slack)"
+        type: boolean
+        default: true
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Validasi config
+        run: python reminder_bot.py --validate
+
+      - name: Kirim reminder
+        if: github.event_name != 'push'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL }}
+          ACK_OWNER_ONLY: ${{ vars.ACK_OWNER_ONLY }}
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          ARGS=()
+          [ -n "$INPUT_DATE" ] && ARGS+=(--date "$INPUT_DATE")
+          [ "$INPUT_DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          python reminder_bot.py "${ARGS[@]}"
