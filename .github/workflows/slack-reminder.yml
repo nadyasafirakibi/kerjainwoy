@@ -17,8 +17,8 @@ jobs:
   remind:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -26,9 +26,11 @@ jobs:
       - name: Kirim reminder
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL || secrets.SLACK_CHANNEL }}
-          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID || secrets.REMINDER_USER_ID }}
+          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL }}
+          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID }}
           ACK_OWNER_ONLY: ${{ vars.ACK_OWNER_ONLY }}
+          REMIND_DAILY: ${{ vars.REMIND_DAILY }}
+          MAX_DAYS: ${{ vars.MAX_DAYS }}
           INPUT_DATE: ${{ inputs.date }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
