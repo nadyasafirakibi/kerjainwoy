@@ -17,6 +17,8 @@ Env:
   SLACK_CHANNEL     channel ID yang dipindai, mis. C0123ABCD
   REMINDER_USER_ID  member ID yang selalu di-mention, mis. U0123ABCD
   ACK_OWNER_ONLY    "true" = hanya ✅ dari REMINDER_USER_ID yang dihitung
+  REMIND_DAILY      "false" = matikan pengingat ulang harian (default: aktif)
+  MAX_DAYS          batas hari pengingat ulang sejak chat dikirim (default 30)
 """
 from __future__ import annotations
 
@@ -49,11 +51,11 @@ TAG_NAME = {v: k for k, v in HASHTAGS.items()}
 #  Baris baru: tulis \n
 # ======================================================================
 PESAN = {
-    1:  ":bell: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    3:  ":hourglass_flowing_sand: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    5:  ":warning: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    7:  ":warning: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    14: ":rotating_light: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    1:  ":bell: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    3:  ":hourglass_flowing_sand: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    5:  ":warning: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    7:  ":warning: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    14: ":rotating_light: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
 }
 
 # Teks kecil abu-abu di bawah pesan. Kosongkan ("") jika tidak perlu.
@@ -62,10 +64,14 @@ PESAN_BAWAH = "{lanjut} Beri reaksi :white_check_mark: jika sudah selesai."
 PESAN_LANJUT = "Reminder berikutnya: {tag_berikut} ({sisa} hari lagi)."
 PESAN_TERAKHIR = "Ini reminder terakhir."
 
+# Pengingat ulang harian: dikirim setiap hari setelah reminder hashtag pertama
+# selama chat belum diberi ✅ (bisa dimatikan dengan variable REMIND_DAILY=false)
+PESAN_ULANG = ":repeat: {mention} Belum ada :white_check_mark: — sudah {hari} hari sejak chat ini dikirim."
+PESAN_LANJUT_HARIAN = "Akan diingatkan lagi besok jika belum ada :white_check_mark:."
+
 # Teks di notifikasi HP/desktop
 PESAN_NOTIF = "Reminder {tag} untuk chat ini"
 # ======================================================================
-SCAN_DAYS = max(HASHTAGS.values()) + 2  # cukup pindai 16 hari terakhir
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("reminder")
@@ -133,12 +139,18 @@ def fill(template: str, **vals) -> str:
     return template
 
 
-def reminder_blocks(owner: str, day: int, triggers: list[int]) -> tuple[str, list[dict]]:
-    vals = {"mention": f"<@{owner}>", "tag": TAG_NAME[day], "hari": day}
+def reminder_blocks(owner: str, day: int, triggers: list[int],
+                    daily: bool, max_days: int) -> tuple[str, list[dict]]:
+    vals = {"mention": f"<@{owner}>", "tag": TAG_NAME.get(day, f"hari ke-{day}"), "hari": day}
     nxt = next((t for t in triggers if t > day), None)
-    lanjut = (fill(PESAN_LANJUT, tag_berikut=TAG_NAME[nxt], sisa=nxt - day) if nxt
-              else PESAN_TERAKHIR)
-    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": fill(PESAN[day], **vals)}}]
+    if nxt and (not daily or nxt == day + 1):
+        lanjut = fill(PESAN_LANJUT, tag_berikut=TAG_NAME[nxt], sisa=nxt - day)
+    elif daily and day < max_days:
+        lanjut = PESAN_LANJUT_HARIAN
+    else:
+        lanjut = PESAN_TERAKHIR
+    utama = PESAN[day] if day in triggers else PESAN_ULANG
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": fill(utama, **vals)}}]
     bawah = fill(PESAN_BAWAH, lanjut=lanjut, **vals).strip()
     if bawah:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": bawah}]})
@@ -155,6 +167,9 @@ def main() -> int:
     token, channel = os.getenv("SLACK_BOT_TOKEN"), os.getenv("SLACK_CHANNEL")
     owner = (os.getenv("REMINDER_USER_ID") or "").strip().strip("<@>")
     owner_only = os.getenv("ACK_OWNER_ONLY", "").lower() == "true"
+    daily = os.getenv("REMIND_DAILY", "").lower() != "false"
+    max_days = int(os.getenv("MAX_DAYS") or 30)
+    scan_days = (max_days if daily else max(HASHTAGS.values())) + 2
     if not token or not channel:
         log.error("Set secret SLACK_BOT_TOKEN dan variable SLACK_CHANNEL")
         return 1
@@ -163,7 +178,7 @@ def main() -> int:
         return 1
 
     today = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else datetime.now(TZ).date()
-    oldest = datetime.combine(today - timedelta(days=SCAN_DAYS), datetime.min.time(), TZ).timestamp()
+    oldest = datetime.combine(today - timedelta(days=scan_days), datetime.min.time(), TZ).timestamp()
     log.info("Tanggal acuan %s", today)
 
     try:
@@ -184,7 +199,9 @@ def main() -> int:
 
         posted = datetime.fromtimestamp(float(msg["ts"]), TZ).date()
         day = (today - posted).days
-        if day not in triggers:
+        is_trigger = day in triggers
+        is_repeat = daily and triggers[0] < day <= max_days
+        if not (is_trigger or is_repeat):
             continue
 
         ts = msg["ts"]
@@ -200,7 +217,7 @@ def main() -> int:
         if any(payload(r, EVT_REMINDER).get("day") == day for r in bot_replies):
             continue  # sudah terkirim (mis. workflow di-rerun)
 
-        text_out, blocks = reminder_blocks(owner, day, triggers)
+        text_out, blocks = reminder_blocks(owner, day, triggers, daily, max_days)
         if args.dry_run:
             print(f"[DRY RUN] thread {ts} -> {text_out}")
             continue
@@ -208,7 +225,7 @@ def main() -> int:
             slack("chat.postMessage", token, channel=channel, thread_ts=ts, text=text_out, blocks=blocks,
                   metadata={"event_type": EVT_REMINDER, "event_payload": {"day": day}})
             sent += 1
-            log.info("Terkirim %s untuk thread %s", TAG_NAME[day], ts)
+            log.info("Terkirim hari ke-%d untuk thread %s", day, ts)
         except RuntimeError as e:
             failed += 1
             log.error("Gagal kirim thread %s: %s", ts, e)
