@@ -26,8 +26,8 @@ jobs:
       - name: Kirim reminder
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL }}
-          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID }}
+          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL || secrets.SLACK_CHANNEL }}
+          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID || secrets.REMINDER_USER_ID }}
           ACK_OWNER_ONLY: ${{ vars.ACK_OWNER_ONLY }}
           INPUT_DATE: ${{ inputs.date }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
