@@ -51,11 +51,11 @@ TAG_NAME = {v: k for k, v in HASHTAGS.items()}
 #  Baris baru: tulis \n
 # ======================================================================
 PESAN = {
-    1:  ":bell: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    3:  ":hourglass_flowing_sand: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    5:  ":warning: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    7:  ":warning: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
-    14: ":rotating_light: {mention} Reminder *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    1:  ":bell: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    3:  ":hourglass_flowing_sand: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    5:  ":warning: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    7:  ":warning: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
+    14: ":rotating_light: {mention} KERJAIN JANGAN BESOK BESOK WOY *{tag}* — sudah {hari} hari sejak chat ini dikirim.",
 }
 
 # Teks kecil abu-abu di bawah pesan. Kosongkan ("") jika tidak perlu.
