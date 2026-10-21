@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-Slack Reminder Bot untuk GitHub Actions.
+Slack Reminder Bot (GitHub Actions) — reminder dari chat ber-hashtag, tanpa tanggal.
 
-- Trigger per reminder via hashtag: #h-14 #h-7 #h-5 #h-3 #sehari (kosong = semua)
-- Mention 1 orang (owner)
-- Berhenti mengingatkan jika salah satu pesan reminder sudah diberi reaksi ✅
+Tulis pesan biasa di channel dengan hashtag trigger:
+    Follow up proposal ke partner @andi #sehari #h-3 #h-7
+
+Hashtag = jumlah hari SETELAH chat dikirim:
+    #sehari = 1 hari, #h-3 = 3 hari, #h-5 = 5 hari, #h-7 = 7 hari, #h-14 = 14 hari
+
+Bot dijalankan tiap pagi, membalas di thread chat tersebut dan selalu me-mention
+1 user yang ditentukan di REMINDER_USER_ID.
+Reminder berhenti jika chat utama atau balasan reminder diberi reaksi ✅.
 
 Env:
-  SLACK_BOT_TOKEN   xoxb-<TOKEN>  scope: chat:write, channels:history (+ groups:history utk private)
-  SLACK_CHANNEL     channel ID default, mis. C0123ABCD
-  ACK_OWNER_ONLY    "true" = hanya ✅ dari owner yang dihitung (default: ✅ dari siapa pun)
+  SLACK_BOT_TOKEN  xoxb-<TOKEN>  scope: chat:write, channels:history (+ groups:history)
+  SLACK_CHANNEL     channel ID yang dipindai, mis. C0123ABCD
+  REMINDER_USER_ID  member ID yang selalu di-mention, mis. U0123ABCD
+  ACK_OWNER_ONLY    "true" = hanya ✅ dari REMINDER_USER_ID yang dihitung
 """
 from __future__ import annotations
 
@@ -19,85 +26,39 @@ import os
 import re
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-import yaml
 
 TZ = ZoneInfo("Asia/Jakarta")
 API = "https://slack.com/api/"
-EVENT_TYPE = "deadline_reminder"
+EVT_REMINDER = "chat_reminder"
 ACK_EMOJIS = {"white_check_mark", "heavy_check_mark", "ballot_box_with_check"}
 
-HASHTAGS = {"#h-14": 14, "#h-7": 7, "#h-5": 5, "#h-3": 3, "#sehari": 1, "#h-1": 1}
-ALL_TRIGGERS = [14, 7, 5, 3, 1]
-STYLE = {
-    14: (":calendar:", "2 minggu lagi"),
-    7: (":spiral_calendar_pad:", "1 minggu lagi"),
-    5: (":hourglass_flowing_sand:", "5 hari lagi"),
-    3: (":warning:", "3 hari lagi"),
-    1: (":rotating_light:", "BESOK"),
-}
+HASHTAGS = {"#sehari": 1, "#h-3": 3, "#h-5": 5, "#h-7": 7, "#h-14": 14}
+TAG_NAME = {v: k for k, v in HASHTAGS.items()}
+EMOJI = {1: ":bell:", 3: ":hourglass_flowing_sand:", 5: ":warning:", 7: ":warning:", 14: ":rotating_light:"}
+SCAN_DAYS = max(HASHTAGS.values()) + 2  # cukup pindai 16 hari terakhir
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("reminder")
 
 
-# ------------------------------------------------------------------ config
-def parse_triggers(value) -> list[int]:
-    if not value:
-        return ALL_TRIGGERS
-    tags = re.findall(r"#[\w-]+", str(value).lower())
-    unknown = [t for t in tags if t not in HASHTAGS]
-    if unknown or not tags:
-        raise ValueError(f"hashtag tidak dikenal: {unknown or value}. "
-                         f"Pilihan: #h-14, #h-7, #h-5, #h-3, #sehari")
-    return sorted({HASHTAGS[t] for t in tags}, reverse=True)
+# ================================================================ parsing
+def normalize(text: str) -> str:
+    # Slack bisa mengubah #nama jadi <#C123|nama> jika channel bernama sama ada
+    return re.sub(r"<#C[A-Z0-9]+\|([^>]*)>", lambda m: f"#{m.group(1)}", text or "")
 
 
-def parse_owner(value) -> str | None:
-    """Terima 'U0123ABCD' atau '<@U0123ABCD>' -> 'U0123ABCD'."""
-    if not value:
-        return None
-    m = re.fullmatch(r"<?@?([UW][A-Z0-9]{6,})>?", str(value).strip())
-    if not m:
-        raise ValueError(f"owner harus Slack member ID (mis. U0123ABCD), bukan '{value}'")
-    return m.group(1)
+def parse_triggers(text: str) -> list[int]:
+    tags = {t.lower() for t in re.findall(r"#[\w-]+", text)}
+    return sorted({HASHTAGS[t] for t in tags if t in HASHTAGS})
 
 
-def load_reminders(path: str) -> list[dict]:
-    with open(path, encoding="utf-8") as f:
-        items = (yaml.safe_load(f) or {}).get("reminders", [])
-    errors, ids = [], set()
-    for i, r in enumerate(items, 1):
-        name = r.get("title", f"item #{i}")
-        if not r.get("title") or not r.get("due_date"):
-            errors.append(f"{name}: wajib ada title dan due_date")
-            continue
-        if not isinstance(r["due_date"], date):
-            try:
-                r["due_date"] = datetime.strptime(str(r["due_date"]), "%Y-%m-%d").date()
-            except ValueError:
-                errors.append(f"{name}: due_date harus format YYYY-MM-DD")
-                continue
-        try:
-            r["_triggers"] = parse_triggers(r.get("trigger"))
-            r["_owner"] = parse_owner(r.get("owner"))
-        except ValueError as e:
-            errors.append(f"{name}: {e}")
-        r.setdefault("id", re.sub(r"\W+", "-", r["title"].lower()).strip("-"))
-        r["_key"] = f"{r['id']}@{r['due_date']}"  # deadline baru = siklus reminder baru
-        if r["_key"] in ids:
-            errors.append(f"{name}: id duplikat '{r['id']}'")
-        ids.add(r["_key"])
-    if errors:
-        raise SystemExit("Config tidak valid:\n- " + "\n- ".join(errors))
-    return items
-
-
-# ------------------------------------------------------------------ slack
+# ================================================================ slack api
 def slack(method: str, token: str, http: str = "post", **params) -> dict:
+    data: dict = {}
     for attempt in range(1, 4):
         kw = {"json": params} if http == "post" else {"params": params}
         resp = requests.request(http, API + method, timeout=20,
@@ -115,120 +76,111 @@ def slack(method: str, token: str, http: str = "post", **params) -> dict:
     raise RuntimeError(data.get("error", "unknown"))
 
 
-def acknowledged_keys(token: str, channel: str, today: date, owner_only: bool,
-                      owners: dict[str, str | None]) -> set[str]:
-    """Cari pesan reminder bot (16 hari terakhir) yang sudah diberi ✅."""
-    oldest = datetime.combine(today - timedelta(days=16), datetime.min.time(), TZ).timestamp()
-    acked, cursor = set(), None
+def paginate(method: str, token: str, key: str, **params) -> list[dict]:
+    out, cursor = [], None
     while True:
-        params = {"channel": channel, "oldest": str(oldest), "limit": 200, "include_all_metadata": "true"}
+        p = dict(params, limit=200, include_all_metadata="true")
         if cursor:
-            params["cursor"] = cursor
-        data = slack("conversations.history", token, http="get", **params)
-        for msg in data.get("messages", []):
-            meta = msg.get("metadata") or {}
-            if meta.get("event_type") != EVENT_TYPE:
-                continue
-            key = meta.get("event_payload", {}).get("key")
-            for react in msg.get("reactions", []):
-                if react["name"] not in ACK_EMOJIS:
-                    continue
-                owner = owners.get(key)
-                if not owner_only or not owner or owner in react.get("users", []):
-                    acked.add(key)
+            p["cursor"] = cursor
+        data = slack(method, token, http="get", **p)
+        out += data.get(key, [])
         cursor = (data.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
-            return acked
+            return out
 
 
-def build_message(r: dict, days_left: int) -> tuple[str, list[dict]]:
-    emoji, label = STYLE[days_left]
-    due = r["due_date"].strftime("%d %b %Y")
-    lines = [f"*Deadline:* {due} — *{label}*"]
-    if r["_owner"]:
-        lines.insert(0, f"<@{r['_owner']}>")
-    if r.get("note"):
-        lines.append(f"*Catatan:* {r['note']}")
-    if r.get("link"):
-        lines.append(f"<{r['link']}|Buka detail>")
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text",
-                                    "text": f"{emoji} H-{days_left} · {r['title']}"[:150], "emoji": True}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
+def has_ack(msg: dict, owner: str, owner_only: bool) -> bool:
+    return any(r["name"] in ACK_EMOJIS and (not owner_only or owner in r.get("users", []))
+               for r in msg.get("reactions", []))
+
+
+def payload(msg: dict, event_type: str) -> dict | None:
+    md = msg.get("metadata") or {}
+    return md.get("event_payload") or {} if md.get("event_type") == event_type else None
+
+
+# ================================================================ reply
+def reminder_blocks(owner: str, day: int, triggers: list[int]) -> tuple[str, list[dict]]:
+    nxt = next((t for t in triggers if t > day), None)
+    follow = (f"Reminder berikutnya: {TAG_NAME[nxt]} ({nxt - day} hari lagi)." if nxt
+              else "Ini reminder terakhir.")
+    return (f"Reminder {TAG_NAME[day]} KERJAIN JANGAN BESOK BESOK", [
+        {"type": "section", "text": {"type": "mrkdwn",
+            "text": f"{EMOJI[day]} <@{owner}> Reminder *{TAG_NAME[day]}* — sudah {day} hari sejak chat ini dikirim."}},
         {"type": "context", "elements": [{"type": "mrkdwn",
-                                          "text": "Beri reaksi :white_check_mark: jika sudah selesai, reminder berikutnya tidak akan dikirim."}]},
-    ]
-    return f"Reminder H-{days_left}: {r['title']} (deadline {due})", blocks
+            "text": f"{follow} Beri reaksi :white_check_mark: jika sudah selesai."}]},
+    ])
 
 
-# ------------------------------------------------------------------ main
+# ================================================================ main
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="reminders.yaml")
     ap.add_argument("--date", help="Simulasi tanggal hari ini (YYYY-MM-DD)")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--validate", action="store_true")
     args = ap.parse_args()
 
-    reminders = [r for r in load_reminders(args.config) if r.get("active") is not False]
-    if args.validate:
-        log.info("Config valid: %d reminder aktif", len(reminders))
-        return 0
-
-    token = os.getenv("SLACK_BOT_TOKEN")
-    default_channel = os.getenv("SLACK_CHANNEL")
+    token, channel = os.getenv("SLACK_BOT_TOKEN"), os.getenv("SLACK_CHANNEL")
+    owner = (os.getenv("REMINDER_USER_ID") or "").strip().strip("<@>")
     owner_only = os.getenv("ACK_OWNER_ONLY", "").lower() == "true"
-    if not token and not args.dry_run:
-        log.error("Secret SLACK_BOT_TOKEN belum di-set")
+    if not token or not channel:
+        log.error("Set secret SLACK_BOT_TOKEN dan variable SLACK_CHANNEL")
+        return 1
+    if not re.fullmatch(r"[UW][A-Z0-9]{6,}", owner):
+        log.error("Variable REMINDER_USER_ID belum di-set / bukan member ID (contoh: U0123ABCD)")
         return 1
 
     today = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else datetime.now(TZ).date()
-    log.info("Tanggal acuan: %s", today)
+    oldest = datetime.combine(today - timedelta(days=SCAN_DAYS), datetime.min.time(), TZ).timestamp()
+    log.info("Tanggal acuan %s", today)
 
-    due_today = []
-    for r in reminders:
-        r["_channel"] = r.get("channel") or default_channel
-        days_left = (r["due_date"] - today).days
-        if days_left in r["_triggers"]:
-            if not r["_channel"]:
-                log.error("%s: channel kosong (isi var SLACK_CHANNEL)", r["id"])
-                return 1
-            due_today.append((r, days_left))
-    if not due_today:
-        log.info("Tidak ada reminder hari ini")
-        return 0
+    try:
+        messages = paginate("conversations.history", token, "messages",
+                            channel=channel, oldest=str(oldest))
+    except RuntimeError as e:
+        log.error("Gagal membaca channel: %s", e)
+        return 1
 
-    # Cek ✅ per channel
-    acked: set[str] = set()
-    if token:
-        owners = {r["_key"]: r["_owner"] for r, _ in due_today}
-        for ch in {r["_channel"] for r, _ in due_today}:
-            try:
-                acked |= acknowledged_keys(token, ch, today, owner_only, owners)
-            except RuntimeError as e:
-                log.error("Gagal baca channel %s: %s", ch, e)
-                return 1
-
-    sent = failed = 0
-    for r, days_left in due_today:
-        if r["_key"] in acked:
-            log.info("Lewati %s: sudah di-✅", r["id"])
+    sent = skipped = failed = 0
+    for msg in messages:
+        if msg.get("bot_id") or msg.get("subtype"):
             continue
-        text, blocks = build_message(r, days_left)
+        text = normalize(msg.get("text", ""))
+        triggers = parse_triggers(text)
+        if not triggers:
+            continue
+
+        posted = datetime.fromtimestamp(float(msg["ts"]), TZ).date()
+        day = (today - posted).days
+        if day not in triggers:
+            continue
+
+        ts = msg["ts"]
+        if has_ack(msg, owner, owner_only):
+            skipped += 1
+            continue
+        bot_replies = [r for r in paginate("conversations.replies", token, "messages",
+                                           channel=channel, ts=ts)[1:]
+                       if payload(r, EVT_REMINDER) is not None]
+        if any(has_ack(r, owner, owner_only) for r in bot_replies):
+            skipped += 1
+            continue
+        if any(payload(r, EVT_REMINDER).get("day") == day for r in bot_replies):
+            continue  # sudah terkirim (mis. workflow di-rerun)
+
+        text_out, blocks = reminder_blocks(owner, day, triggers)
         if args.dry_run:
-            print(f"[DRY RUN] {r['_channel']} -> {text}")
+            print(f"[DRY RUN] thread {ts} -> {text_out}")
             continue
         try:
-            slack("chat.postMessage", token, channel=r["_channel"], text=text, blocks=blocks,
-                  unfurl_links=False,
-                  metadata={"event_type": EVENT_TYPE,
-                            "event_payload": {"key": r["_key"], "days_left": days_left}})
+            slack("chat.postMessage", token, channel=channel, thread_ts=ts, text=text_out, blocks=blocks,
+                  metadata={"event_type": EVT_REMINDER, "event_payload": {"day": day}})
             sent += 1
-            log.info("Terkirim: %s H-%d", r["id"], days_left)
+            log.info("Terkirim %s untuk thread %s", TAG_NAME[day], ts)
         except RuntimeError as e:
             failed += 1
-            log.error("%s: gagal kirim (%s)", r["id"], e)
-    log.info("Selesai: %d terkirim, %d gagal", sent, failed)
+            log.error("Gagal kirim thread %s: %s", ts, e)
+
+    log.info("Selesai: %d terkirim, %d dilewati (sudah ✅), %d gagal", sent, skipped, failed)
     return 1 if failed else 0
 
 
