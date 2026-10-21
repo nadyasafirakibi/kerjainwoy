@@ -2,9 +2,7 @@ name: Slack Reminder
 
 on:
   schedule:
-    - cron: "0 2 * * *"        # 09:00 WIB setiap hari
-  push:
-    paths: ["reminders.yaml"]  # validasi otomatis saat reminders.yaml diubah
+    - cron: "0 2 * * *"   # 09:00 WIB setiap hari
   workflow_dispatch:
     inputs:
       date:
@@ -25,15 +23,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-
-      - name: Validasi config
-        run: python reminder_bot.py --validate
-
       - name: Kirim reminder
-        if: github.event_name != 'push'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL }}
+          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID }}
           ACK_OWNER_ONLY: ${{ vars.ACK_OWNER_ONLY }}
           INPUT_DATE: ${{ inputs.date }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
