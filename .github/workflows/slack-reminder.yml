@@ -26,11 +26,11 @@ jobs:
       - name: Kirim reminder
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL }}
-          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID }}
-          ACK_OWNER_ONLY: ${{ vars.ACK_OWNER_ONLY }}
-          REMIND_DAILY: ${{ vars.REMIND_DAILY }}
-          MAX_DAYS: ${{ vars.MAX_DAYS }}
+          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL || secrets.SLACK_CHANNEL }}
+          REMINDER_USER_ID: ${{ vars.REMINDER_USER_ID || secrets.REMINDER_USER_ID }}
+          ACK_OWNER_ONLY: ${{ vars.ACK_OWNER_ONLY || secrets.ACK_OWNER_ONLY }}
+          REMIND_DAILY: ${{ vars.REMIND_DAILY || secrets.REMIND_DAILY }}
+          MAX_DAYS: ${{ vars.MAX_DAYS || secrets.MAX_DAYS }}
           INPUT_DATE: ${{ inputs.date }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
